@@ -1,0 +1,11 @@
+[package]
+name = "flax"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+io-uring = { version = "0.5.9", default-features = false, features = ["unstable"] }
+anyhow = "1.0"
+tracing = "0.1"
+libc = "0.2"
+
