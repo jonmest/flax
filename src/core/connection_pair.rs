@@ -22,7 +22,7 @@ pub struct ConnectionPair {
 
     pub request_content_length: Option<usize>,
     pub request_transfer_encoding_chunked: bool,
-    pub closing: bool,
+    pub had_error: bool,
 }
 
 impl ConnectionPair {
@@ -47,7 +47,7 @@ impl ConnectionPair {
 
             request_content_length: None,
             request_transfer_encoding_chunked: false,
-            closing: false,
+            had_error: false,
         }
     }
 

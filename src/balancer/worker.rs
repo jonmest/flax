@@ -3,9 +3,11 @@ use std::os::fd::RawFd;
 
 use io_uring::{IoUring, opcode};
 
+use crate::backend::connection_cache::close_fd_quiet;
 use crate::backend::{BackendConnectionCache, select_backend};
+use crate::core::connection_pair::ConnectionPair;
 use crate::core::constants;
-use crate::core::stream_pump::{Direction, Operation};
+use crate::core::stream_pump::{Direction, Operation, StreamPump};
 use crate::core::user_data::{pack_user_data, unpack_user_data};
 use crate::protocol::peek_request_headers;
 
@@ -115,9 +117,13 @@ pub fn run_worker(listen_fd: RawFd, config: WorkerConfig) -> io::Result<()> {
                     handle_send_client_to_backend(&mut ring, &mut pool, id, res)
                 }
 
-                Operation::Recv(Direction::BackendToClient) => {
-                    handle_recv_backend_to_client(&mut ring, &mut pool, id, res)
-                }
+                Operation::Recv(Direction::BackendToClient) => handle_recv_backend_to_client(
+                    &mut ring,
+                    &mut pool,
+                    &mut backend_connection_cache,
+                    id,
+                    res,
+                ),
 
                 Operation::Send(Direction::BackendToClient) => {
                     handle_send_backend_to_client(&mut ring, &mut pool, id, res)
@@ -171,70 +177,88 @@ fn handle_recv_headers(
     res: i32,
 ) {
     if res <= 0 {
+        if let Some(pair) = pool.get_mut(id) {
+            pair.had_error = true;
+        }
         pool.teardown(id);
         return;
     }
 
-    let Some(pair) = pool.get_mut(id) else {
-        return;
-    };
+    let mut teardown = false;
+    {
+        let Some(pair) = pool.get_mut(id) else {
+            return;
+        };
+        pair.header_buffer.wrote(res as usize);
+        let win = pair.header_buffer.window();
+        match peek_request_headers(win) {
+            Err("Incomplete message") => {
+                // Need more data
+                post_recv_headers(ring, pair);
+                return;
+            }
+            Err(_) => {
+                // Malformed request - drop connection
+                pair.had_error = true;
+                teardown = true;
+            }
+            Ok(meta) => {
+                // Headers complete - route to backend
+                let backend_addr = select_backend();
 
-    pair.header_buffer.wrote(res as usize);
+                // Persist request metadata
+                pair.request_content_length = meta.content_length_value;
+                pair.request_transfer_encoding_chunked = meta.transfer_encoding_is_chunked;
+                pair.backend_address = Some(backend_addr);
 
-    let win = pair.header_buffer.window();
+                // CRITICAL: Copy the ENTIRE request (headers + any body bytes)
+                // We need to forward the complete HTTP request to the backend
+                let request_data = win.to_vec();
 
-    match peek_request_headers(win) {
-        Err("Incomplete message") => {
-            // Need more data
-            post_recv_headers(ring, pair);
-        }
-        Err(_) => {
-            // Malformed request - drop connection
-            pool.teardown(id);
-        }
-        Ok(meta) => {
-            // Headers complete - route to backend
-            let backend_addr = select_backend();
+                // Consume all the data we just copied
+                pair.header_buffer.consume_to(pair.header_buffer.end);
 
-            // Persist request metadata
-            pair.request_content_length = meta.content_length_value;
-            pair.request_transfer_encoding_chunked = meta.transfer_encoding_is_chunked;
-
-            // CRITICAL: Copy the ENTIRE request (headers + any body bytes)
-            // We need to forward the complete HTTP request to the backend
-            let request_data = win.to_vec();
-            let cached_connection = cache.borrow_connection(&backend_addr);
-
-            match cached_connection {
-                Some(connection) => {
-                    pair.attach_backend_socket(connection);
-                    pair.backend_address = Some(backend_addr);
-                    pair.start_streaming();
+                // Stage the complete request (headers + body) for sending to backend
+                if !request_data.is_empty() {
+                    let pump = &mut pair.pump_client_to_backend;
+                    let n = request_data.len().min(pump.buffer.len());
+                    pump.buffer[..n].copy_from_slice(&request_data[..n]);
+                    pump.bytes_ready_to_send = n;
+                    pump.bytes_already_sent = 0;
                 }
-                None => {
-                    // Connect to backend
-                    if post_connect_backend(ring, pair, backend_addr).is_err() {
-                        pool.teardown(id);
-                        return;
+
+                if let Some(backend_fd) = cache.borrow_connection(&backend_addr) {
+                    pair.attach_backend_socket(backend_fd);
+                    pair.start_streaming();
+
+                    if pair.pump_client_to_backend.bytes_ready_to_send > 0 {
+                        post_send_pump(
+                            ring,
+                            id,
+                            &mut pair.pump_client_to_backend,
+                            Operation::Send(Direction::ClientToBackend),
+                        );
                     }
 
-                    // Consume all the data we just copied
-                    pair.header_buffer.consume_to(pair.header_buffer.end);
-
-                    // Stage the complete request (headers + body) for sending to backend
-                    if !request_data.is_empty() {
-                        let pump = &mut pair.pump_client_to_backend;
-                        let n = request_data.len().min(pump.buffer.len());
-                        pump.buffer[..n].copy_from_slice(&request_data[..n]);
-                        pump.bytes_ready_to_send = n;
-                        pump.bytes_already_sent = 0;
-                    }
+                    post_recv_pump(
+                        ring,
+                        id,
+                        &mut pair.pump_backend_to_client,
+                        Operation::Recv(Direction::BackendToClient),
+                    );
+                } else if post_connect_backend(ring, pair, backend_addr).is_err() {
+                    pair.had_error = true;
+                    teardown = true;
                 }
             }
         }
     }
-}
 
+    if teardown {
+        pool.teardown(id);
+    }
+}
+   
 fn handle_connect_backend(ring: &mut IoUring, pool: &mut ConnectionPool, id: usize, _res: i32) {
     let Some(pair) = pool.get_mut(id) else {
         return;
@@ -265,6 +289,7 @@ fn handle_connect_backend(ring: &mut IoUring, pool: &mut ConnectionPool, id: usi
     }
 
     if err_code != 0 {
+        pair.had_error = true;
         pool.teardown(id);
         return;
     }
@@ -298,6 +323,10 @@ fn handle_recv_client_to_backend(
     res: i32,
 ) {
     if res <= 0 {
+        if let Some(pair) = pool.get_mut(id) {
+            pair.had_error = true;
+        }
+
         pool.teardown(id);
         return;
     }
@@ -319,6 +348,9 @@ fn handle_send_client_to_backend(
     res: i32,
 ) {
     if res < 0 {
+        if let Some(pair) = pool.get_mut(id) {
+            pair.had_error = true;
+        }
         pool.teardown(id);
         return;
     }
@@ -344,22 +376,39 @@ fn handle_send_client_to_backend(
 fn handle_recv_backend_to_client(
     ring: &mut IoUring,
     pool: &mut ConnectionPool,
+    cache: &mut BackendConnectionCache,
     id: usize,
     res: i32,
 ) {
-    if res <= 0 {
+    if res < 0 {
+        if let Some(pair) = pool.get_mut(id) {
+            pair.had_error = true;
+        }
         pool.teardown(id);
         return;
     }
+    let reuse_backend = {
+        let Some(pair) = pool.get_mut(id) else {
+            return;
+        };
 
-    let Some(pair) = pool.get_mut(id) else {
-        return;
+        if res == 0 {
+            pair.pump_backend_to_client.recv_in_flight = false;
+            Some(finish_request(pair, cache))
+        } else {
+            let pump = &mut pair.pump_backend_to_client;
+            pump.recv_in_flight = false;
+            pump.bytes_ready_to_send += res as usize;
+            post_send_pump(ring, id, pump, Operation::Send(Direction::BackendToClient));
+            return;
+        }
     };
 
-    let pump = &mut pair.pump_backend_to_client;
-    pump.recv_in_flight = false;
-    pump.bytes_ready_to_send += res as usize;
-    post_send_pump(ring, id, pump, Operation::Send(Direction::BackendToClient));
+    if let Some(true) = reuse_backend {
+        pool.recycle_slot_only(id);
+    } else if reuse_backend.is_some() {
+        pool.teardown(id);
+    }
 }
 
 fn handle_send_backend_to_client(
@@ -369,6 +418,9 @@ fn handle_send_backend_to_client(
     res: i32,
 ) {
     if res < 0 {
+        if let Some(pair) = pool.get_mut(id) {
+            pair.had_error = true;
+        }
         pool.teardown(id);
         return;
     }
@@ -389,4 +441,48 @@ fn handle_send_backend_to_client(
         pump.reset_buffer();
         post_recv_pump(ring, id, pump, Operation::Recv(Direction::BackendToClient));
     }
+}
+
+fn finish_request(pair: &mut ConnectionPair, cache: &mut BackendConnectionCache) -> bool {
+    let pumps_idle = pair.pump_client_to_backend.is_idle() && pair.pump_backend_to_client.is_idle();
+    let healthy_backend = !pair.had_error && pair.backend_fd >= 0;
+
+    let mut reused = false;
+
+    if pumps_idle && healthy_backend {
+        if let Some(addr) = pair.backend_address {
+            cache.return_connection(&addr, pair.backend_fd);
+            reused = true;
+        } else {
+            close_fd_quiet(pair.backend_fd);
+        }
+        pair.backend_fd = -1;
+    } else if pair.backend_fd >= 0 {
+        close_fd_quiet(pair.backend_fd);
+        pair.backend_fd = -1;
+    }
+
+    pair.backend_address = None;
+    pair.backend_sockaddr_storage = None;
+    pair.backend_sockaddr_len = 0;
+    pair.request_content_length = None;
+    pair.request_transfer_encoding_chunked = false;
+    pair.had_error = false;
+
+    reset_pump_after_finish(&mut pair.pump_client_to_backend);
+    reset_pump_after_finish(&mut pair.pump_backend_to_client);
+
+    pair.header_buffer.start = 0;
+    pair.header_buffer.end = 0;
+
+    reused
+}
+
+fn reset_pump_after_finish(pump: &mut StreamPump) {
+    pump.reset_buffer();
+    pump.read_fd = -1;
+    pump.write_fd = -1;
+    pump.recv_in_flight = false;
+    pump.send_in_flight = false;
+    pump.remaining_request_body_bytes = None;
 }

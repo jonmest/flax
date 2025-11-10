@@ -93,7 +93,9 @@ pub struct HttpMetadata<'a> {
 /// - Transfer-Encoding: chunked detection
 ///
 /// Returns Err("Incomplete message") if headers are not yet fully received
-pub fn peek_request_headers<'a>(request_window: &'a [u8]) -> Result<HttpMetadata<'a>, &'static str> {
+pub fn peek_request_headers<'a>(
+    request_window: &'a [u8],
+) -> Result<HttpMetadata<'a>, &'static str> {
     // 1. Find the end of header block (\r\n\r\n)
     let Some(crlf_crlf_position) = memmem::find(request_window, b"\r\n\r\n") else {
         return Err("Incomplete message");
@@ -114,16 +116,7 @@ pub fn peek_request_headers<'a>(request_window: &'a [u8]) -> Result<HttpMetadata
     let path_bytes = fields.next().ok_or("Bad")?;
     let version_bytes = fields.next().ok_or("Bad")?;
 
-    eprintln!("[DEBUG PARSE] method={:?}, path={:?}, version={:?}",
-              String::from_utf8_lossy(method_bytes),
-              String::from_utf8_lossy(path_bytes),
-              String::from_utf8_lossy(version_bytes));
-    eprintln!("[DEBUG PARSE] method.len()={}, path.len()={}, version.len()={}",
-              method_bytes.len(), path_bytes.len(), version_bytes.len());
-
     if method_bytes.is_empty() || version_bytes.len() < 8 {
-        eprintln!("[DEBUG PARSE] Validation failed: method.is_empty()={}, version.len() < 8 = {}",
-                  method_bytes.is_empty(), version_bytes.len() < 8);
         return Err("bad");
     }
 
@@ -133,10 +126,7 @@ pub fn peek_request_headers<'a>(request_window: &'a [u8]) -> Result<HttpMetadata
     let mut transfer_encoding_is_chunked = false;
 
     let mut line_start = request_line_end_rel + 2; // skip CRLF after request-line
-    eprintln!("[DEBUG PARSE] Starting header loop, line_start={}, headers_len={}",
-              line_start, headers_without_final_crlfcrlf.len());
     while line_start < headers_without_final_crlfcrlf.len() {
-        eprintln!("[DEBUG PARSE] Looking for next header line at offset {}", line_start);
         // Find the end of this header line
         let line_end = if let Some(rel_line_end) =
             memmem::find(&headers_without_final_crlfcrlf[line_start..], b"\r\n")

@@ -1,4 +1,4 @@
-use libc::{sockaddr_in, sockaddr_in6, sockaddr_storage};
+use libc::{sockaddr_in6, sockaddr_storage};
 use socket2::{Domain, Protocol, Socket, Type};
 use std::net::{SocketAddr, TcpListener};
 use std::os::fd::{IntoRawFd, RawFd};
