@@ -1,0 +1,2 @@
+Hello from Flax load balancer!
+This is a small test file.

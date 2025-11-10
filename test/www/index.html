@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Flax Load Balancer Test</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            line-height: 1.6;
+        }
+        h1 { color: #2c3e50; }
+        .info { background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0; }
+        code { background: #e9ecef; padding: 2px 6px; border-radius: 3px; }
+    </style>
+</head>
+<body>
+    <h1>Flax Load Balancer - Test Page</h1>
+    <div class="info">
+        <p>This is a test page served by nginx backend servers.</p>
+        <p>Check the <code>X-Backend-ID</code> response header to see which backend served this request.</p>
+    </div>
+    <h2>Features</h2>
+    <ul>
+        <li>High-performance io_uring-based proxy</li>
+        <li>Per-core workers with SO_REUSEPORT</li>
+        <li>Zero-copy bidirectional streaming</li>
+        <li>Round-robin backend selection</li>
+    </ul>
+</body>
+</html>

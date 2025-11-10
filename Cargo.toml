@@ -8,4 +8,6 @@ io-uring = { version = "0.5.9", default-features = false, features = ["unstable"
 anyhow = "1.0"
 tracing = "0.1"
 libc = "0.2"
-
+memchr = "2.7.6"
+socket2 = { version = "0.6", features = ["all"] }
+core_affinity = "0.8.3"

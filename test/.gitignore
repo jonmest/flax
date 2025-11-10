@@ -1,0 +1,7 @@
+# Docker volumes and generated files
+*.bin
+*.tmp
+
+# Don't ignore the sample files
+!www/small.txt
+!www/index.html
