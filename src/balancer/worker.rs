@@ -65,16 +65,8 @@ pub fn run_worker(listen_fd: RawFd, config: WorkerConfig) -> io::Result<()> {
     }
 
     // Main event loop
-    let mut iteration = 0u64;
     loop {
-        iteration += 1;
-        if iteration % 10000 == 0 {
-            eprintln!("[DEBUG LOOP] iteration {}", iteration);
-        }
-
-        eprintln!("[DEBUG LOOP] About to submit_and_wait");
         ring.submit_and_wait(1)?;
-        eprintln!("[DEBUG LOOP] Returned from submit_and_wait");
 
         // Drain all completed events
         let mut events = Vec::new();
@@ -84,15 +76,12 @@ pub fn run_worker(listen_fd: RawFd, config: WorkerConfig) -> io::Result<()> {
                 events.push((cqe.user_data(), cqe.result()));
             }
         }
-        eprintln!("[DEBUG LOOP] Got {} events", events.len());
 
         // Process each completed event
         for (tag, res) in events {
             let (id, op) = unpack_user_data(tag);
-            eprintln!("[DEBUG EVENT LOOP] id={}, op={:?}, res={}", id, op, res);
 
             let Some(_pair) = pool.get_mut(id) else {
-                eprintln!("[DEBUG EVENT LOOP] pair not found for id={}", id);
                 continue;
             };
 
@@ -148,23 +137,17 @@ fn handle_accept(
     listen_fd: RawFd,
     _config: &WorkerConfig,
 ) {
-    eprintln!("[DEBUG ACCEPT] id={}, res={}", id, res);
-
     if res < 0 {
-        eprintln!("[DEBUG ACCEPT] Accept failed, re-arming");
         // Accept failed, re-arm on same slot
         post_accept(ring, listen_fd, id);
         return;
     }
-
-    eprintln!("[DEBUG ACCEPT] Accept succeeded, client_fd={}", res);
 
     // Accept succeeded - store client FD and start reading headers
     if let Some(pair) = pool.get_mut(id) {
         pair.client_fd = res;
         pair.header_buffer.start = 0;
         pair.header_buffer.end = 0;
-        eprintln!("[DEBUG ACCEPT] Posting recv_headers for id={}", id);
         post_recv_headers(ring, pair);
     }
 
@@ -175,34 +158,25 @@ fn handle_accept(
 }
 
 fn handle_recv_headers(ring: &mut IoUring, pool: &mut ConnectionPool, id: usize, res: i32) {
-    eprintln!("[DEBUG] handle_recv_headers: id={}, res={}", id, res);
-
     if res <= 0 {
-        eprintln!("[DEBUG] recv_headers failed, res={}", res);
         pool.teardown(id);
         return;
     }
 
     let Some(pair) = pool.get_mut(id) else {
-        eprintln!("[DEBUG] pair not found for id={}", id);
         return;
     };
 
     pair.header_buffer.wrote(res as usize);
-    eprintln!("[DEBUG] wrote {} bytes to header buffer", res);
 
     let win = pair.header_buffer.window();
-    eprintln!("[DEBUG] window size: {} bytes", win.len());
-    eprintln!("[DEBUG] window content: {:?}", String::from_utf8_lossy(&win[..win.len().min(100)]));
 
     match peek_request_headers(win) {
         Err("Incomplete message") => {
-            eprintln!("[DEBUG] incomplete message, need more data");
             // Need more data
             post_recv_headers(ring, pair);
         }
-        Err(e) => {
-            eprintln!("[DEBUG] malformed request: {}", e);
+        Err(_) => {
             // Malformed request - drop connection
             pool.teardown(id);
         }
@@ -217,15 +191,12 @@ fn handle_recv_headers(ring: &mut IoUring, pool: &mut ConnectionPool, id: usize,
             // CRITICAL: Copy the ENTIRE request (headers + any body bytes)
             // We need to forward the complete HTTP request to the backend
             let request_data = win.to_vec();
-            eprintln!("[DEBUG] Got request: {} bytes", request_data.len());
 
             // Connect to backend
-            if let Err(e) = post_connect_backend(ring, pair, backend_addr) {
-                eprintln!("connect setup failed: {e}");
+            if let Err(_) = post_connect_backend(ring, pair, backend_addr) {
                 pool.teardown(id);
                 return;
             }
-            eprintln!("[DEBUG] Connecting to backend: {}", backend_addr);
 
             // Consume all the data we just copied
             pair.header_buffer.consume_to(pair.header_buffer.end);
@@ -237,15 +208,12 @@ fn handle_recv_headers(ring: &mut IoUring, pool: &mut ConnectionPool, id: usize,
                 pump.buffer[..n].copy_from_slice(&request_data[..n]);
                 pump.bytes_ready_to_send = n;
                 pump.bytes_already_sent = 0;
-                eprintln!("[DEBUG] Staged {} bytes for sending to backend", n);
             }
         }
     }
 }
 
 fn handle_connect_backend(ring: &mut IoUring, pool: &mut ConnectionPool, id: usize, _res: i32) {
-    eprintln!("[DEBUG] handle_connect_backend: id={}", id);
-
     let Some(pair) = pool.get_mut(id) else {
         return;
     };
@@ -265,7 +233,6 @@ fn handle_connect_backend(ring: &mut IoUring, pool: &mut ConnectionPool, id: usi
 
     if err_code == libc::EINPROGRESS {
         // Still connecting - wait a tiny bit and try again (this shouldn't happen for localhost)
-        eprintln!("[DEBUG] Still EINPROGRESS, submitting another NOP");
         let sqe = opcode::Nop::new()
             .build()
             .user_data(pack_user_data(id, Operation::ConnectBackend));
@@ -278,19 +245,15 @@ fn handle_connect_backend(ring: &mut IoUring, pool: &mut ConnectionPool, id: usi
     }
 
     if err_code != 0 {
-        eprintln!("[DEBUG] Connection failed with SO_ERROR: {}", err_code);
         pool.teardown(id);
         return;
     }
-
-    eprintln!("[DEBUG] Connection established!");
 
     // Connection established - start bidirectional streaming
     pair.start_streaming();
 
     // Client → Backend: send buffered request
     if pair.pump_client_to_backend.bytes_ready_to_send > 0 {
-        eprintln!("[DEBUG] Sending {} bytes to backend", pair.pump_client_to_backend.bytes_ready_to_send);
         post_send_pump(
             ring,
             id,
@@ -335,16 +298,12 @@ fn handle_send_client_to_backend(
     id: usize,
     res: i32,
 ) {
-    eprintln!("[DEBUG SEND C->B] id={}, res={}", id, res);
-
     if res < 0 {
-        eprintln!("[DEBUG SEND C->B] Send failed, tearing down");
         pool.teardown(id);
         return;
     }
 
     let Some(pair) = pool.get_mut(id) else {
-        eprintln!("[DEBUG SEND C->B] Pair not found");
         return;
     };
 

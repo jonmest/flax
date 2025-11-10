@@ -60,8 +60,6 @@ pub fn post_connect_backend(
         .unwrap()
         .as_ref() as *const _ as *const libc::sockaddr;
 
-    eprintln!("[DEBUG CONNECT] Initiating non-blocking connect to {}", backend_addr);
-
     // Non-blocking connect
     let connect_result = unsafe {
         libc::connect(pair.backend_fd, ptr, slen)
@@ -71,12 +69,8 @@ pub fn post_connect_backend(
         let err = io::Error::last_os_error();
         // EINPROGRESS (115) is expected for non-blocking connect
         if err.raw_os_error() != Some(libc::EINPROGRESS) {
-            eprintln!("[DEBUG CONNECT] Connect failed: {:?}", err);
             return Err(err);
         }
-        eprintln!("[DEBUG CONNECT] Connect in progress (EINPROGRESS)");
-    } else {
-        eprintln!("[DEBUG CONNECT] Connected immediately!");
     }
 
     // Trigger handler - it will check if connection is ready
@@ -132,21 +126,14 @@ pub fn post_send_pump(
     pump: &mut StreamPump,
     tag: Operation,
 ) {
-    eprintln!("[DEBUG post_send_pump] pair_id={}, write_fd={}, send_in_flight={}, bytes_ready={}, bytes_sent={}",
-              pair_id, pump.write_fd, pump.send_in_flight, pump.bytes_ready_to_send, pump.bytes_already_sent);
-
     if pump.send_in_flight {
-        eprintln!("[DEBUG post_send_pump] Send already in flight, skipping");
         return;
     }
     if pump.bytes_already_sent >= pump.bytes_ready_to_send {
-        eprintln!("[DEBUG post_send_pump] No data to send, skipping");
         return;
     }
     let ptr = unsafe { pump.buffer.as_mut_ptr().add(pump.bytes_already_sent) };
     let len = (pump.bytes_ready_to_send - pump.bytes_already_sent) as u32;
-
-    eprintln!("[DEBUG post_send_pump] Submitting send: fd={}, len={}", pump.write_fd, len);
 
     let sqe = opcode::Send::new(types::Fd(pump.write_fd), ptr, len)
         .build()
