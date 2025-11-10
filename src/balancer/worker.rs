@@ -1,9 +1,9 @@
 use std::io;
 use std::os::fd::RawFd;
 
-use io_uring::{opcode, IoUring};
+use io_uring::{IoUring, opcode};
 
-use crate::backend::select_backend;
+use crate::backend::{BackendConnectionCache, select_backend};
 use crate::core::constants;
 use crate::core::stream_pump::{Direction, Operation};
 use crate::core::user_data::{pack_user_data, unpack_user_data};
@@ -56,6 +56,13 @@ pub fn run_worker(listen_fd: RawFd, config: WorkerConfig) -> io::Result<()> {
         config.io_buffer_capacity,
         config.header_buffer_capacity,
     );
+    let mut backend_connection_cache = {
+        let cache = BackendConnectionCache::new();
+        if cache.is_none() {
+            eprintln!("Failed to instantiate backend connection cache.");
+        };
+        cache.unwrap()
+    };
 
     // Prime the accept pipeline
     for _ in 0..config.initial_accepts {
@@ -86,20 +93,19 @@ pub fn run_worker(listen_fd: RawFd, config: WorkerConfig) -> io::Result<()> {
             };
 
             match op {
-                Operation::Accept => handle_accept(
+                Operation::Accept => {
+                    handle_accept(&mut ring, &mut pool, id, res, listen_fd, &config)
+                }
+
+                Operation::RecvHeaders => handle_recv_headers(
                     &mut ring,
                     &mut pool,
+                    &mut backend_connection_cache,
                     id,
                     res,
-                    listen_fd,
-                    &config,
                 ),
 
-                Operation::RecvHeaders => handle_recv_headers(&mut ring, &mut pool, id, res),
-
-                Operation::ConnectBackend => {
-                    handle_connect_backend(&mut ring, &mut pool, id, res)
-                }
+                Operation::ConnectBackend => handle_connect_backend(&mut ring, &mut pool, id, res),
 
                 Operation::Recv(Direction::ClientToBackend) => {
                     handle_recv_client_to_backend(&mut ring, &mut pool, id, res)
@@ -157,7 +163,13 @@ fn handle_accept(
     post_accept(ring, listen_fd, nid);
 }
 
-fn handle_recv_headers(ring: &mut IoUring, pool: &mut ConnectionPool, id: usize, res: i32) {
+fn handle_recv_headers(
+    ring: &mut IoUring,
+    pool: &mut ConnectionPool,
+    cache: &mut BackendConnectionCache,
+    id: usize,
+    res: i32,
+) {
     if res <= 0 {
         pool.teardown(id);
         return;
@@ -191,23 +203,33 @@ fn handle_recv_headers(ring: &mut IoUring, pool: &mut ConnectionPool, id: usize,
             // CRITICAL: Copy the ENTIRE request (headers + any body bytes)
             // We need to forward the complete HTTP request to the backend
             let request_data = win.to_vec();
+            let cached_connection = cache.borrow_connection(&backend_addr);
 
-            // Connect to backend
-            if let Err(_) = post_connect_backend(ring, pair, backend_addr) {
-                pool.teardown(id);
-                return;
-            }
+            match cached_connection {
+                Some(connection) => {
+                    pair.attach_backend_socket(connection);
+                    pair.backend_address = Some(backend_addr);
+                    pair.start_streaming();
+                }
+                None => {
+                    // Connect to backend
+                    if post_connect_backend(ring, pair, backend_addr).is_err() {
+                        pool.teardown(id);
+                        return;
+                    }
 
-            // Consume all the data we just copied
-            pair.header_buffer.consume_to(pair.header_buffer.end);
+                    // Consume all the data we just copied
+                    pair.header_buffer.consume_to(pair.header_buffer.end);
 
-            // Stage the complete request (headers + body) for sending to backend
-            if !request_data.is_empty() {
-                let pump = &mut pair.pump_client_to_backend;
-                let n = request_data.len().min(pump.buffer.len());
-                pump.buffer[..n].copy_from_slice(&request_data[..n]);
-                pump.bytes_ready_to_send = n;
-                pump.bytes_already_sent = 0;
+                    // Stage the complete request (headers + body) for sending to backend
+                    if !request_data.is_empty() {
+                        let pump = &mut pair.pump_client_to_backend;
+                        let n = request_data.len().min(pump.buffer.len());
+                        pump.buffer[..n].copy_from_slice(&request_data[..n]);
+                        pump.bytes_ready_to_send = n;
+                        pump.bytes_already_sent = 0;
+                    }
+                }
             }
         }
     }
@@ -237,9 +259,7 @@ fn handle_connect_backend(ring: &mut IoUring, pool: &mut ConnectionPool, id: usi
             .build()
             .user_data(pack_user_data(id, Operation::ConnectBackend));
         unsafe {
-            ring.submission()
-                .push(&sqe)
-                .expect("SQ full (nop retry)");
+            ring.submission().push(&sqe).expect("SQ full (nop retry)");
         }
         return;
     }
