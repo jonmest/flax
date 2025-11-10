@@ -1,12 +1,12 @@
 use std::io;
 use std::os::fd::RawFd;
 
-use io_uring::IoUring;
+use io_uring::{opcode, IoUring};
 
 use crate::backend::select_backend;
 use crate::core::constants;
 use crate::core::stream_pump::{Direction, Operation};
-use crate::core::user_data::unpack_user_data;
+use crate::core::user_data::{pack_user_data, unpack_user_data};
 use crate::protocol::peek_request_headers;
 
 use super::connection_pool::ConnectionPool;
@@ -243,14 +243,49 @@ fn handle_recv_headers(ring: &mut IoUring, pool: &mut ConnectionPool, id: usize,
     }
 }
 
-fn handle_connect_backend(ring: &mut IoUring, pool: &mut ConnectionPool, id: usize, res: i32) {
+fn handle_connect_backend(ring: &mut IoUring, pool: &mut ConnectionPool, id: usize, _res: i32) {
     eprintln!("[DEBUG] handle_connect_backend: id={}", id);
 
     let Some(pair) = pool.get_mut(id) else {
         return;
     };
 
-    // Connection already established - start bidirectional streaming
+    // Check SO_ERROR to see if connection completed
+    let mut err_code: i32 = 0;
+    let mut err_len: libc::socklen_t = std::mem::size_of::<i32>() as libc::socklen_t;
+    unsafe {
+        libc::getsockopt(
+            pair.backend_fd,
+            libc::SOL_SOCKET,
+            libc::SO_ERROR,
+            &mut err_code as *mut _ as *mut libc::c_void,
+            &mut err_len,
+        )
+    };
+
+    if err_code == libc::EINPROGRESS {
+        // Still connecting - wait a tiny bit and try again (this shouldn't happen for localhost)
+        eprintln!("[DEBUG] Still EINPROGRESS, submitting another NOP");
+        let sqe = opcode::Nop::new()
+            .build()
+            .user_data(pack_user_data(id, Operation::ConnectBackend));
+        unsafe {
+            ring.submission()
+                .push(&sqe)
+                .expect("SQ full (nop retry)");
+        }
+        return;
+    }
+
+    if err_code != 0 {
+        eprintln!("[DEBUG] Connection failed with SO_ERROR: {}", err_code);
+        pool.teardown(id);
+        return;
+    }
+
+    eprintln!("[DEBUG] Connection established!");
+
+    // Connection established - start bidirectional streaming
     pair.start_streaming();
 
     // Client → Backend: send buffered request

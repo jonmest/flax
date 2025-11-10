@@ -13,20 +13,17 @@ use std::io;
 
 pub fn make_backend_socket(addr: SocketAddr) -> io::Result<(RawFd, Box<sockaddr_storage>, libc::socklen_t)> {
     let (domain, (storage, len)) = match addr {
-        SocketAddr::V4(a4) => {
-            let mut st: sockaddr_in = unsafe { std::mem::zeroed() };
-            st.sin_family = libc::AF_INET as u16;
-            st.sin_port = a4.port().to_be();
-            // s_addr expects network byte order (big-endian)
-            st.sin_addr = libc::in_addr { s_addr: u32::from_be_bytes(a4.ip().octets()) };
+        SocketAddr::V4(_) => {
+            let sock_addr: socket2::SockAddr = addr.into();
             let mut ss: sockaddr_storage = unsafe { std::mem::zeroed() };
-            unsafe { std::ptr::write(&mut ss as *mut _ as *mut sockaddr_in, st); }
-
-            eprintln!("[DEBUG SOCKET] Creating IPv4 socket for {}:{}", a4.ip(), a4.port());
-            eprintln!("[DEBUG SOCKET] sin_family={}, sin_port={:#x}, sin_addr.s_addr={:#x}",
-                      st.sin_family, st.sin_port, st.sin_addr.s_addr);
-
-            (Domain::IPV4, (Box::new(ss), std::mem::size_of::<sockaddr_in>() as libc::socklen_t))
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    sock_addr.as_ptr() as *const u8,
+                    &mut ss as *mut _ as *mut u8,
+                    sock_addr.len() as usize,
+                );
+            }
+            (Domain::IPV4, (Box::new(ss), sock_addr.len()))
         }
         SocketAddr::V6(a6) => {
             let mut st: sockaddr_in6 = unsafe { std::mem::zeroed() };
@@ -41,12 +38,8 @@ pub fn make_backend_socket(addr: SocketAddr) -> io::Result<(RawFd, Box<sockaddr_
     };
 
     let sock = Socket::new(domain, Type::STREAM, Some(Protocol::TCP))?;
-    // Keep socket blocking for connect - localhost is instant anyway
-    // sock.set_nonblocking(true)?;
-    sock.set_nodelay(true)?;
+    sock.set_nonblocking(true)?;  // MUST be non-blocking for io_uring
     let fd = sock.into_raw_fd();
-
-    eprintln!("[DEBUG SOCKET] Created socket fd={}, len={}", fd, len);
 
     Ok((fd, storage, len))
 }

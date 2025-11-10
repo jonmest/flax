@@ -60,28 +60,26 @@ pub fn post_connect_backend(
         .unwrap()
         .as_ref() as *const _ as *const libc::sockaddr;
 
-    eprintln!("[DEBUG CONNECT] Connecting to {}", backend_addr);
+    eprintln!("[DEBUG CONNECT] Initiating non-blocking connect to {}", backend_addr);
 
-    // Blocking connect (instant for localhost)
+    // Non-blocking connect
     let connect_result = unsafe {
         libc::connect(pair.backend_fd, ptr, slen)
     };
 
     if connect_result < 0 {
         let err = io::Error::last_os_error();
-        eprintln!("[DEBUG CONNECT] Connect failed: {:?}", err);
-        return Err(err);
+        // EINPROGRESS (115) is expected for non-blocking connect
+        if err.raw_os_error() != Some(libc::EINPROGRESS) {
+            eprintln!("[DEBUG CONNECT] Connect failed: {:?}", err);
+            return Err(err);
+        }
+        eprintln!("[DEBUG CONNECT] Connect in progress (EINPROGRESS)");
+    } else {
+        eprintln!("[DEBUG CONNECT] Connected immediately!");
     }
 
-    eprintln!("[DEBUG CONNECT] Connected! Setting non-blocking");
-
-    // Now set non-blocking for io_uring operations
-    unsafe {
-        let flags = libc::fcntl(pair.backend_fd, libc::F_GETFL);
-        libc::fcntl(pair.backend_fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
-    }
-
-    // Trigger handler
+    // Trigger handler - it will check if connection is ready
     let sqe = opcode::Nop::new()
         .build()
         .user_data(pack_user_data(pair.id, Operation::ConnectBackend));
