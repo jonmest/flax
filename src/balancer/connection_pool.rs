@@ -1,9 +1,9 @@
 use std::collections::VecDeque;
 use std::os::fd::RawFd;
 
-use crate::backend::connection_cache::close_fd_quiet;
 use crate::core::connection_pair::ConnectionPair;
 use crate::protocol::HttpBuf;
+use crate::util::fd::close_fd_quiet;
 
 /// Connection pool using slab allocation with a freelist
 ///
@@ -59,25 +59,22 @@ impl ConnectionPool {
 
     pub fn teardown(&mut self, id: usize) {
         if let Some(p) = self.pairs.get_mut(id).and_then(|p| p.take()) {
-            // Close file descriptors
             if p.client_fd >= 0 {
                 close_fd_quiet(p.client_fd);
             }
             if p.backend_fd >= 0 {
                 close_fd_quiet(p.backend_fd);
             }
-            // Return slot to freelist
             self.freelist.push_back(id);
         }
     }
 
     pub fn recycle_slot_only(&mut self, id: usize) {
-        if let Some(slot) = self.pairs.get_mut(id) {
-            if let Some(p) = slot.take() {
-                if p.client_fd >= 0 {
-                    close_fd_quiet(p.client_fd);
-                }
-            }
+        if let Some(slot) = self.pairs.get_mut(id)
+            && let Some(p) = slot.take()
+            && p.client_fd >= 0
+        {
+            close_fd_quiet(p.client_fd);
         }
     }
 

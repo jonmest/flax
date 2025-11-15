@@ -1,37 +1,10 @@
 use std::{
     collections::{HashMap, VecDeque},
-    io,
     net::SocketAddr,
     os::fd::RawFd,
 };
 
-pub fn close_fd(fd: RawFd) -> io::Result<()> {
-    let ret = unsafe { libc::close(fd) };
-    if ret == 0 {
-        Ok(())
-    } else {
-        Err(io::Error::last_os_error())
-    }
-}
-
-pub fn close_fd_quiet(fd: RawFd) {
-    // After this call, consider fd dead in all code paths.
-    let ret = unsafe { libc::close(fd) };
-    if ret != 0 {
-        let err = io::Error::last_os_error();
-        match err.raw_os_error() {
-            Some(libc::EBADF) => {
-                eprintln!("close({fd}) -> EBADF (double close / invalid fd)");
-            }
-            Some(libc::EINTR) => {
-                eprintln!("close({fd}) interrupted by signal (EINTR); not retrying");
-            }
-            _ => {
-                eprintln!("close({fd}) failed: {err}");
-            }
-        }
-    }
-}
+use crate::util::fd::close_fd_quiet;
 
 const MAX_CACHED: usize = 200;
 

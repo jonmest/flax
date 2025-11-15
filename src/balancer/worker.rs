@@ -3,13 +3,13 @@ use std::os::fd::RawFd;
 
 use io_uring::{IoUring, opcode};
 
-use crate::backend::connection_cache::close_fd_quiet;
 use crate::backend::{BackendConnectionCache, select_backend};
 use crate::core::connection_pair::ConnectionPair;
 use crate::core::constants;
 use crate::core::stream_pump::{Direction, Operation, StreamPump};
 use crate::core::user_data::{pack_user_data, unpack_user_data};
 use crate::protocol::peek_request_headers;
+use crate::util::fd::close_fd_quiet;
 
 use super::connection_pool::ConnectionPool;
 use super::uring_ops::{
