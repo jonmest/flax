@@ -211,21 +211,14 @@ fn handle_recv_headers(
                 pair.request_transfer_encoding_chunked = meta.transfer_encoding_is_chunked;
                 pair.backend_address = Some(backend_addr);
 
-                // CRITICAL: Copy the ENTIRE request (headers + any body bytes)
-                // We need to forward the complete HTTP request to the backend
-                let request_data = win.to_vec();
+                let pump = &mut pair.pump_client_to_backend;
+                let n = win.len().min(pump.buffer.len());
 
-                // Consume all the data we just copied
+                pump.buffer[..n].copy_from_slice(&win[..n]);
+                pump.bytes_ready_to_send = n;
+                pump.bytes_already_sent = 0;
+
                 pair.header_buffer.consume_to(pair.header_buffer.end);
-
-                // Stage the complete request (headers + body) for sending to backend
-                if !request_data.is_empty() {
-                    let pump = &mut pair.pump_client_to_backend;
-                    let n = request_data.len().min(pump.buffer.len());
-                    pump.buffer[..n].copy_from_slice(&request_data[..n]);
-                    pump.bytes_ready_to_send = n;
-                    pump.bytes_already_sent = 0;
-                }
 
                 if let Some(backend_fd) = cache.borrow_connection(&backend_addr) {
                     pair.attach_backend_socket(backend_fd);
@@ -258,7 +251,7 @@ fn handle_recv_headers(
         pool.teardown(id);
     }
 }
-   
+
 fn handle_connect_backend(ring: &mut IoUring, pool: &mut ConnectionPool, id: usize, _res: i32) {
     let Some(pair) = pool.get_mut(id) else {
         return;
