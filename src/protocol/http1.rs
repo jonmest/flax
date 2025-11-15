@@ -47,6 +47,20 @@ impl HttpBuf {
     pub fn window(&self) -> &[u8] {
         &self.buf[self.start..self.end]
     }
+
+    pub fn drain(&mut self) -> (Vec<u8>, usize, usize) {
+        let buf = std::mem::take(&mut self.buf);
+        let (start, end) = (self.start, self.end);
+        self.start = 0;
+        self.end = 0;
+        (buf, start, end)
+    }
+
+    pub fn replace_buffer(&mut self, buf: Vec<u8>) {
+        self.buf = buf;
+        self.start = 0;
+        self.end = 0;
+    }
 }
 
 pub struct HttpMetadata<'a> {

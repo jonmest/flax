@@ -211,14 +211,19 @@ fn handle_recv_headers(
                 pair.request_transfer_encoding_chunked = meta.transfer_encoding_is_chunked;
                 pair.backend_address = Some(backend_addr);
 
+                // Swap buffers to avoid copy (zero-copy if data is at front)
+                let (header_buf, start, end) = pair.header_buffer.drain();
                 let pump = &mut pair.pump_client_to_backend;
-                let n = win.len().min(pump.buffer.len());
+                let old_pump_buf = std::mem::replace(&mut pump.buffer, header_buf);
+                pair.header_buffer.replace_buffer(old_pump_buf);
 
-                pump.buffer[..n].copy_from_slice(&win[..n]);
-                pump.bytes_ready_to_send = n;
+                // Move data to front if needed (zero-copy when start==0)
+                let data_len = end - start;
+                if start != 0 && data_len > 0 {
+                    pump.buffer.copy_within(start..end, 0);
+                }
+                pump.bytes_ready_to_send = data_len;
                 pump.bytes_already_sent = 0;
-
-                pair.header_buffer.consume_to(pair.header_buffer.end);
 
                 if let Some(backend_fd) = cache.borrow_connection(&backend_addr) {
                     pair.attach_backend_socket(backend_fd);
