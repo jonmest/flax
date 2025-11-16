@@ -60,28 +60,20 @@ pub fn post_connect_backend(
         .unwrap()
         .as_ref() as *const _ as *const libc::sockaddr;
 
-    eprintln!("[DEBUG CONNECT] Connecting to {}", backend_addr);
-
-    // Blocking connect (instant for localhost)
+    // Non-blocking connect
     let connect_result = unsafe {
         libc::connect(pair.backend_fd, ptr, slen)
     };
 
     if connect_result < 0 {
         let err = io::Error::last_os_error();
-        eprintln!("[DEBUG CONNECT] Connect failed: {:?}", err);
-        return Err(err);
+        // EINPROGRESS (115) is expected for non-blocking connect
+        if err.raw_os_error() != Some(libc::EINPROGRESS) {
+            return Err(err);
+        }
     }
 
-    eprintln!("[DEBUG CONNECT] Connected! Setting non-blocking");
-
-    // Now set non-blocking for io_uring operations
-    unsafe {
-        let flags = libc::fcntl(pair.backend_fd, libc::F_GETFL);
-        libc::fcntl(pair.backend_fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
-    }
-
-    // Trigger handler
+    // Trigger handler - it will check if connection is ready
     let sqe = opcode::Nop::new()
         .build()
         .user_data(pack_user_data(pair.id, Operation::ConnectBackend));
@@ -134,21 +126,14 @@ pub fn post_send_pump(
     pump: &mut StreamPump,
     tag: Operation,
 ) {
-    eprintln!("[DEBUG post_send_pump] pair_id={}, write_fd={}, send_in_flight={}, bytes_ready={}, bytes_sent={}",
-              pair_id, pump.write_fd, pump.send_in_flight, pump.bytes_ready_to_send, pump.bytes_already_sent);
-
     if pump.send_in_flight {
-        eprintln!("[DEBUG post_send_pump] Send already in flight, skipping");
         return;
     }
     if pump.bytes_already_sent >= pump.bytes_ready_to_send {
-        eprintln!("[DEBUG post_send_pump] No data to send, skipping");
         return;
     }
     let ptr = unsafe { pump.buffer.as_mut_ptr().add(pump.bytes_already_sent) };
     let len = (pump.bytes_ready_to_send - pump.bytes_already_sent) as u32;
-
-    eprintln!("[DEBUG post_send_pump] Submitting send: fd={}, len={}", pump.write_fd, len);
 
     let sqe = opcode::Send::new(types::Fd(pump.write_fd), ptr, len)
         .build()

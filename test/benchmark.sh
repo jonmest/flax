@@ -1,20 +1,17 @@
 #!/bin/bash
 set -e
 
-# Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-# Configuration
 DURATION=10
 THREADS=4
 CONNECTIONS=100
 URL_PATH="/small.txt"
 
-# URLs
 DIRECT_URL="http://localhost:8081${URL_PATH}"
 LB_URL="http://localhost:3000${URL_PATH}"
 
@@ -23,7 +20,6 @@ echo -e "${BLUE}║    Flax Load Balancer Benchmark Suite     ║${NC}"
 echo -e "${BLUE}╔════════════════════════════════════════════╗${NC}"
 echo ""
 
-# Check if wrk is installed
 if command -v wrk &> /dev/null; then
     BENCHMARKER="wrk"
     echo -e "${GREEN}✓ Using wrk for benchmarking${NC}"
@@ -45,7 +41,6 @@ echo "  Connections:  ${CONNECTIONS}"
 echo "  Test file:    ${URL_PATH}"
 echo ""
 
-# Function to check if a service is responding
 check_service() {
     local url=$1
     local name=$2
@@ -58,14 +53,12 @@ check_service() {
     fi
 }
 
-# Check if backends are running
 echo -e "${BLUE}Checking services...${NC}"
 check_service "http://localhost:8081/health" "Backend 1 (port 8081)" || exit 1
 check_service "http://localhost:8082/health" "Backend 2 (port 8082)" || exit 1
 check_service "http://localhost:8083/health" "Backend 3 (port 8083)" || exit 1
 echo ""
 
-# Function to run wrk benchmark
 run_wrk() {
     local url=$1
     local name=$2
@@ -78,7 +71,6 @@ run_wrk() {
     echo ""
 }
 
-# Function to run ab benchmark
 run_ab() {
     local url=$1
     local name=$2
@@ -92,7 +84,6 @@ run_ab() {
     echo ""
 }
 
-# Benchmark direct connection to backend
 echo -e "${BLUE}════════════════════════════════════════════${NC}"
 echo -e "${BLUE}  Test 1: Direct Connection to Backend     ${NC}"
 echo -e "${BLUE}════════════════════════════════════════════${NC}"
@@ -104,20 +95,17 @@ else
     run_ab "$DIRECT_URL" "Direct to Backend"
 fi
 
-# Ask if Flax LB is running
 echo -e "${YELLOW}Is Flax load balancer running on port 3000?${NC}"
 echo -e "Start it with: ${GREEN}cargo run --release${NC}"
 read -p "Press Enter when ready, or Ctrl+C to skip LB test..."
 echo ""
 
-# Check if LB is responding
 if ! check_service "${LB_URL}" "Flax Load Balancer (port 3000)"; then
     echo -e "${RED}Skipping load balancer test${NC}"
     exit 0
 fi
 echo ""
 
-# Benchmark through load balancer
 echo -e "${BLUE}════════════════════════════════════════════${NC}"
 echo -e "${BLUE}  Test 2: Through Flax Load Balancer       ${NC}"
 echo -e "${BLUE}════════════════════════════════════════════${NC}"
@@ -129,7 +117,6 @@ else
     run_ab "$LB_URL" "Through Load Balancer"
 fi
 
-# Test backend distribution
 echo -e "${BLUE}════════════════════════════════════════════${NC}"
 echo -e "${BLUE}  Test 3: Backend Distribution Check       ${NC}"
 echo -e "${BLUE}════════════════════════════════════════════${NC}"

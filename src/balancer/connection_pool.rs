@@ -3,6 +3,7 @@ use std::os::fd::RawFd;
 
 use crate::core::connection_pair::ConnectionPair;
 use crate::protocol::HttpBuf;
+use crate::util::fd::close_fd_quiet;
 
 /// Connection pool using slab allocation with a freelist
 ///
@@ -16,7 +17,11 @@ pub struct ConnectionPool {
 }
 
 impl ConnectionPool {
-    pub fn new(initial_capacity: usize, io_buffer_capacity: usize, header_buffer_capacity: usize) -> Self {
+    pub fn new(
+        initial_capacity: usize,
+        io_buffer_capacity: usize,
+        header_buffer_capacity: usize,
+    ) -> Self {
         Self {
             pairs: Vec::with_capacity(initial_capacity),
             freelist: VecDeque::new(),
@@ -54,15 +59,22 @@ impl ConnectionPool {
 
     pub fn teardown(&mut self, id: usize) {
         if let Some(p) = self.pairs.get_mut(id).and_then(|p| p.take()) {
-            // Close file descriptors
             if p.client_fd >= 0 {
-                unsafe { libc::close(p.client_fd) };
+                close_fd_quiet(p.client_fd);
             }
             if p.backend_fd >= 0 {
-                unsafe { libc::close(p.backend_fd) };
+                close_fd_quiet(p.backend_fd);
             }
-            // Return slot to freelist
             self.freelist.push_back(id);
+        }
+    }
+
+    pub fn recycle_slot_only(&mut self, id: usize) {
+        if let Some(slot) = self.pairs.get_mut(id)
+            && let Some(p) = slot.take()
+            && p.client_fd >= 0
+        {
+            close_fd_quiet(p.client_fd);
         }
     }
 

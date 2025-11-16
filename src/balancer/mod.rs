@@ -5,10 +5,12 @@
 //! - Connection pool management
 //! - io_uring operation helpers
 
+pub mod config;
 pub mod connection_pool;
+pub mod handlers;
 pub mod uring_ops;
 pub mod worker;
 
-// Re-export main types
+pub use config::WorkerConfig;
 pub use connection_pool::ConnectionPool;
-pub use worker::{run_worker, WorkerConfig};
+pub use worker::run_worker;

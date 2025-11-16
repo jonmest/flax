@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use std::os::fd::RawFd;
 
 use libc::sockaddr_storage;
@@ -10,6 +11,7 @@ pub struct ConnectionPair {
     pub client_fd: RawFd,
     pub backend_fd: RawFd,
 
+    pub backend_address: Option<SocketAddr>,
     pub backend_sockaddr_storage: Option<Box<sockaddr_storage>>,
     pub backend_sockaddr_len: libc::socklen_t,
 
@@ -20,7 +22,7 @@ pub struct ConnectionPair {
 
     pub request_content_length: Option<usize>,
     pub request_transfer_encoding_chunked: bool,
-    pub closing: bool,
+    pub had_error: bool,
 }
 
 impl ConnectionPair {
@@ -33,6 +35,7 @@ impl ConnectionPair {
         Self {
             id,
             client_fd,
+            backend_address: None,
             backend_fd: -1,
             backend_sockaddr_storage: None,
             backend_sockaddr_len: 0,
@@ -44,7 +47,7 @@ impl ConnectionPair {
 
             request_content_length: None,
             request_transfer_encoding_chunked: false,
-            closing: false,
+            had_error: false,
         }
     }
 

@@ -4,12 +4,12 @@ use std::os::fd::RawFd;
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 
 pub enum OpCode {
-    Accept       = 1,
-    ConnectBack  = 2,
-    Recv         = 3,
-    Send         = 4,
-    Timeout      = 5,
-    RecvHeaders  = 6,
+    Accept = 1,
+    ConnectBack = 2,
+    Recv = 3,
+    Send = 4,
+    Timeout = 5,
+    RecvHeaders = 6,
 }
 
 impl OpCode {
@@ -35,7 +35,6 @@ pub enum Direction {
     BackendToClient = 1,
 }
 
-/// Public operation enum used by your code.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Operation {
     Accept,
@@ -48,15 +47,12 @@ pub enum Operation {
 
 /// Single-direction forwarding state.
 pub struct StreamPump {
-    /// Source to read from (recv).
     pub read_fd: RawFd,
-    /// Destination to write to (send).
     pub write_fd: RawFd,
 
-    /// Fixed-size I/O buffer reused forever.
     pub buffer: Vec<u8>,
 
-    /// Number of valid bytes currently in `buffer` (prefix).
+    /// Number of valid bytes currently in `buffer`
     pub bytes_ready_to_send: usize,
     /// How many of those bytes have been sent so far (for partial sends).
     pub bytes_already_sent: usize,
@@ -66,7 +62,6 @@ pub struct StreamPump {
     /// True if a Send SQE is outstanding.
     pub send_in_flight: bool,
 
-    /// Optional body-length tracking (use only for Client→Backend).
     pub remaining_request_body_bytes: Option<usize>,
 }
 
