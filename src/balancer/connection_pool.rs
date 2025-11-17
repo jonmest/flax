@@ -11,7 +11,7 @@ use crate::util::fd::close_fd_quiet;
 /// to avoid allocations in the hot path.
 pub struct ConnectionPool {
     pairs: Vec<Option<ConnectionPair>>,
-    freelist: VecDeque<usize>,
+    freelist: Vec<usize>,
     io_buffer_capacity: usize,
     header_buffer_capacity: usize,
 }
@@ -24,14 +24,14 @@ impl ConnectionPool {
     ) -> Self {
         Self {
             pairs: Vec::with_capacity(initial_capacity),
-            freelist: VecDeque::new(),
+            freelist: Vec::new(),
             io_buffer_capacity,
             header_buffer_capacity,
         }
     }
 
     pub fn alloc(&mut self) -> usize {
-        if let Some(id) = self.freelist.pop_front() {
+        if let Some(id) = self.freelist.pop() {
             return id;
         }
         let id = self.pairs.len();
@@ -65,7 +65,7 @@ impl ConnectionPool {
             if p.backend_fd >= 0 {
                 close_fd_quiet(p.backend_fd);
             }
-            self.freelist.push_back(id);
+            self.freelist.push(id);
         }
     }
 
